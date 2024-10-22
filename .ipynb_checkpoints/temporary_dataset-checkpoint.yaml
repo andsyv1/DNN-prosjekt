@@ -1,0 +1,7 @@
+names:
+- balloon
+nc: 1
+path: ''
+test: /home/andreases/DNN/AS_2_4/Test/Images
+train: /home/andreases/DNN/AS_2_4/Train/Images
+val: /home/andreases/DNN/AS_2_4/Val/Images
