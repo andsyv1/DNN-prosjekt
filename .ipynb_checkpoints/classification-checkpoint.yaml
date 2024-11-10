@@ -1,0 +1,6 @@
+train: ../fish4knowledge_copy/train/images
+val: ../fish4knowledge_copy/val/images
+test: ../fish4knowledge_copy/test/images
+
+nc: 1
+names: ['0']

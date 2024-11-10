@@ -1,0 +1,6 @@
+train: ../../segmentation_data/train/images
+val: ../../segmentation_data/val/images
+test: ../../segmentation_data/test/images
+
+nc: 1
+names: ['0']
