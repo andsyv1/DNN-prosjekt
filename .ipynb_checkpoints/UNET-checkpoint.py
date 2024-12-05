@@ -15,6 +15,8 @@ from tqdm import tqdm
 result_dir = "./result_UNet"
 os.makedirs(result_dir, exist_ok=True)
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # Få transformasjoner fra Dataloader.py
 image_transform, mask_transform = get_transforms()
 
@@ -40,9 +42,9 @@ test_dataset = FishSegmentationDataset(
     mask_transform=mask_transform
 )
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=120, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=120, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=120, shuffle=False)
 
 # Last ned forhåndstrent U-Net modell og tilpass for binær segmentering (fisk vs bakgrunn)
 model = smp.Unet(
@@ -51,16 +53,18 @@ model = smp.Unet(
     classes=1,                      # Én kanal for binær segmentering
     activation=None                 # Ingen aktivering her, vi bruker sigmoid i etterkant
 )
-model = model.to("cuda" if torch.cuda.is_available() else "cpu")
+
+model = model.to(device)
+
 
 # Definer tapfunksjon og optimizer
 criterion = nn.BCEWithLogitsLoss()  # For binær segmentering
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr = 0.0001)
 
 # Variabler for å logge trenings- og validerings-tap
 train_losses = []
 val_losses = []
-num_epochs = 10
+num_epochs = 100
 
 sigmoid = nn.Sigmoid()  # Sigmoid for å transformere logits til sannsynlighet
 
@@ -69,13 +73,11 @@ for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
     for images, masks in tqdm(train_loader):
-        images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-        masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")  # Endre til float for BCEWithLogitsLoss
-
+        images = images.to(device)
+        masks = masks.float().to(device) 
         optimizer.zero_grad()
         outputs = model(images)
-        
-        loss = criterion(outputs, masks.unsqueeze(1))  # Legg til kanal-dimensjon for BCEWithLogitsLoss
+        loss = criterion(outputs, masks) 
         loss.backward()
         optimizer.step()
         
@@ -92,11 +94,11 @@ for epoch in range(num_epochs):
     all_labels = []
     with torch.no_grad():
         for images, masks in val_loader:
-            images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-            masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")
+            images = images.to(device)
+            masks = masks.float().to(device)
 
-            outputs = model(images)
-            loss = criterion(outputs, masks.unsqueeze(1))
+            outputs = model(images) # ['out']
+            loss = criterion(outputs, masks)
             val_loss += loss.item()
 
             preds = sigmoid(outputs).cpu().numpy()  # Påfør sigmoid for å få sannsynlighet
@@ -114,6 +116,7 @@ for epoch in range(num_epochs):
     precision = precision_score(all_labels, all_preds, average="binary")
     recall = recall_score(all_labels, all_preds, average="binary")
     iou = jaccard_score(all_labels, all_preds, average="binary")
+    accuracy=  np.mean(np.array(all_labels) == np.array(all_preds))
 
     print(f"F1 Score: {f1}, Precision: {precision}, Recall: {recall}, IoU: {iou}")
 
@@ -126,12 +129,13 @@ for epoch in range(num_epochs):
         f.write(f"Precision: {precision}\n")
         f.write(f"Recall: {recall}\n")
         f.write(f"IoU: {iou}\n\n")
+        
 
 # Funksjon for å visualisere en batch med originale bilder og segmenteringsresultater
 def visualize_batch(data_loader, model, dataset_name):
     model.eval()
     images, masks = next(iter(data_loader))
-    images = images.to("cuda" if torch.cuda.is_available() else "cpu")
+    images = images.to(device)
     
     with torch.no_grad():
         outputs = sigmoid(model(images)).cpu()  # Påfør sigmoid her
@@ -186,8 +190,8 @@ all_preds = []
 all_labels = []
 with torch.no_grad():
     for images, masks in test_loader:
-        images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-        masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")
+        images = images.to(device)
+        masks = masks.float().to(device)
         
         outputs = sigmoid(model(images)).cpu().numpy()
         preds = (outputs > 0.5).astype(np.uint8).flatten()
@@ -201,6 +205,7 @@ f1 = f1_score(all_labels, all_preds, average="binary")
 precision = precision_score(all_labels, all_preds, average="binary")
 recall = recall_score(all_labels, all_preds, average="binary")
 iou = jaccard_score(all_labels, all_preds, average="binary")
+accuracy=  np.mean(np.array(all_labels) == np.array(all_preds))
 
 with open(os.path.join(result_dir, "test_metrics.txt"), "w") as f:
     f.write("Test Set Metrics\n")
@@ -208,6 +213,7 @@ with open(os.path.join(result_dir, "test_metrics.txt"), "w") as f:
     f.write(f"Precision: {precision}\n")
     f.write(f"Recall: {recall}\n")
     f.write(f"IoU: {iou}\n")
+    f.write(f"Accuracy {accuracy}")
 
 # Beregn og visualiser forvirringsmatrisen
 conf_matrix = confusion_matrix(all_labels, all_preds, labels=[0, 1])

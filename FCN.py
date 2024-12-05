@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
+# Sett opp device
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # Opprett en mappe for å lagre resultater
 result_dir = "./result_FCN"
 os.makedirs(result_dir, exist_ok=True)
@@ -43,23 +47,28 @@ test_dataset = FishSegmentationDataset(
     mask_transform=mask_transform
 )
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=120, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=120, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=120, shuffle=False)
 
 # Last ned forhåndstrent FCN-modell og tilpass for 1 klasse (binær segmentering)
 model = models.segmentation.fcn_resnet50(pretrained=True)
 model.classifier[4] = nn.Conv2d(512, num_classes, kernel_size=(1, 1))  # Endre til én utgang
-model = model.to("cuda" if torch.cuda.is_available() else "cpu")
+
+# Flytt modellen til GPU
+model = model.to(device)
+
+# Bekreft at modellen er på riktig enhet
+print(f"Model is on device: {next(model.parameters()).device}")
 
 # Definer tapfunksjon og optimizer
 criterion = nn.BCEWithLogitsLoss()  # For binær segmentering
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
 # Trenings- og valideringssløyfe
 train_losses = []
 val_losses = []
-num_epochs = 10
+num_epochs = 100
 
 sigmoid = nn.Sigmoid()  # Definer sigmoid-funksjon for utgangen
 
@@ -67,18 +76,18 @@ for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
     for images, masks in tqdm(train_loader):
-        images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-        masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")  # Endre masken til float for BCEWithLogitsLoss
+        images = images.to(device)
+        masks = masks.float().to(device)
 
         optimizer.zero_grad()
-        outputs = model(images)["out"]
-        
-        loss = criterion(outputs, masks)  # Ingen squeeze nødvendig, dimensjonene matcher nå
+        outputs = model(images)['out']
+
+        loss = criterion(outputs, masks)
         loss.backward()
         optimizer.step()
-        
+
         running_loss += loss.item()
-    
+
     train_loss = running_loss / len(train_loader)
     train_losses.append(train_loss)
     print(f"Epoch [{epoch+1}/{num_epochs}], Training Loss: {train_loss}")
@@ -90,28 +99,29 @@ for epoch in range(num_epochs):
     all_labels = []
     with torch.no_grad():
         for images, masks in val_loader:
-            images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-            masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")
+            images = images.to(device)
+            masks = masks.float().to(device)
 
-            outputs = model(images)["out"]
+            outputs = model(images)['out']
             loss = criterion(outputs, masks)
             val_loss += loss.item()
 
-            preds = sigmoid(outputs).cpu().numpy()  # Påfør sigmoid for å få sannsynlighet
-            preds = (preds > 0.5).astype(np.uint8).flatten()  # Terskel for binær segmentering
+            preds = sigmoid(outputs).cpu().numpy()
+            preds = (preds > 0.5).astype(np.uint8).flatten()
             labels = masks.cpu().numpy().flatten()
             all_preds.extend(preds)
             all_labels.extend(labels)
-    
+
     val_loss /= len(val_loader)
     val_losses.append(val_loss)
     print(f"Epoch [{epoch+1}/{num_epochs}], Validation Loss: {val_loss}")
 
     # Beregn metrikker
-    f1 = f1_score(all_labels, all_preds, average="macro")
-    precision = precision_score(all_labels, all_preds, average="macro")
-    recall = recall_score(all_labels, all_preds, average="macro")
-    iou = jaccard_score(all_labels, all_preds, average="macro")
+    f1 = f1_score(all_labels, all_preds, average="binary")
+    precision = precision_score(all_labels, all_preds, average="binary")
+    recall = recall_score(all_labels, all_preds, average="binary")
+    iou = jaccard_score(all_labels, all_preds, average="binary")
+    accuracy = np.mean(np.array(all_labels) == np.array(all_preds))
 
     print(f"F1 Score: {f1}, Precision: {precision}, Recall: {recall}, IoU: {iou}")
 
@@ -123,16 +133,17 @@ for epoch in range(num_epochs):
         f.write(f"F1 Score: {f1}\n")
         f.write(f"Precision: {precision}\n")
         f.write(f"Recall: {recall}\n")
-        f.write(f"IoU: {iou}\n\n")
+        f.write(f"IoU: {iou}\n")
+        f.write(f"Accuracy {accuracy}\n\n")
 
 # Funksjon for å visualisere en batch med originale bilder og segmenteringsresultater
 def visualize_batch(data_loader, model, dataset_name):
     model.eval()
     images, masks = next(iter(data_loader))
-    images = images.to("cuda" if torch.cuda.is_available() else "cpu")
+    images = images.to(device)
     
     with torch.no_grad():
-        outputs = sigmoid(model(images)["out"]).cpu()  # Påfør sigmoid her
+        outputs = sigmoid(model(images)["out"])  # Påfør sigmoid her .cpu()
 
     fig, axes = plt.subplots(len(images), 3, figsize=(12, 4 * len(images)))
 
@@ -143,7 +154,7 @@ def visualize_batch(data_loader, model, dataset_name):
         axes[i, 0].axis("off")
 
         # Segmenteringsmaske
-        mask = outputs[i].squeeze(0).numpy() > 0.5  # Binariser basert på terskel
+        mask = outputs[i].squeeze(0).cpu().numpy() > 0.5  # Binariser basert på terskel
         axes[i, 1].imshow(mask, cmap="gray")
         axes[i, 1].set_title(f"{dataset_name} - Segmentation Mask")
         axes[i, 1].axis("off")
@@ -184,8 +195,8 @@ all_preds = []
 all_labels = []
 with torch.no_grad():
     for images, masks in test_loader:
-        images = images.to("cuda" if torch.cuda.is_available() else "cpu")
-        masks = masks.float().to("cuda" if torch.cuda.is_available() else "cpu")
+        images = images.to(device)
+        masks = masks.float().to(device)
         
         outputs = sigmoid(model(images)["out"]).cpu().numpy()
         preds = (outputs > 0.5).astype(np.uint8).flatten()
@@ -195,10 +206,11 @@ with torch.no_grad():
         all_labels.extend(labels)
 
 # Beregn og lagre sluttmetrikker på testsettet
-f1 = f1_score(all_labels, all_preds, average="macro")
-precision = precision_score(all_labels, all_preds, average="macro")
-recall = recall_score(all_labels, all_preds, average="macro")
-iou = jaccard_score(all_labels, all_preds, average="macro")
+f1 = f1_score(all_labels, all_preds, average="binary")
+precision = precision_score(all_labels, all_preds, average="binary")
+recall = recall_score(all_labels, all_preds, average="binary")
+iou = jaccard_score(all_labels, all_preds, average="binary")
+accuracy=  np.mean(np.array(all_labels) == np.array(all_preds))
 
 with open(os.path.join(result_dir, "test_metrics.txt"), "w") as f:
     f.write("Test Set Metrics\n")
@@ -206,9 +218,9 @@ with open(os.path.join(result_dir, "test_metrics.txt"), "w") as f:
     f.write(f"Precision: {precision}\n")
     f.write(f"Recall: {recall}\n")
     f.write(f"IoU: {iou}\n")
+    f.write(f"Accuracy {accuracy}")
 
-# Beregn og visualiser forvirringsmatrisen
-conf_matrix = confusion_matrix(all_labels, all_preds, labels=[0, 1])  # Binær klassifisering
+conf_matrix = confusion_matrix(all_labels, all_preds, labels=[0, 1])
 plt.figure(figsize=(12, 10))
 sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues", xticklabels=[0, 1], yticklabels=[0, 1])
 plt.xlabel("Predicted Labels")
@@ -216,5 +228,6 @@ plt.ylabel("True Labels")
 plt.title("Confusion Matrix")
 plt.savefig(os.path.join(result_dir, "confusion_matrix.png"))
 plt.show()
+
 
 print("Trening og evaluering ferdig. Resultater lagret i result_FCN-mappen.")
